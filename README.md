@@ -10,8 +10,11 @@ qactor 是一个基于 Qt 6 的 C++17 类actor 风格执行库：把一段工作
 ExecThread thread("calculator");                         // 一条专属的事件循环线程
 Calculator *calc = thread.spawn<Calculator>().result();  // actor 诞生在该线程上
 
-//QFuture<Calculator*> future = thread.postFuture<Calculator>();
-//Calculator *calc = future.result();
+// 也可以自己投递构造，一次建多个对象时更合适：
+// QFuture<Calculator *> future = async::postFuture(&thread, [&thread] {
+//     return new Calculator(&thread);
+// });
+// Calculator *calc = future.result();
 
 calc->add(2);                                            // 消息进入ExecThread，依次执行
 calc->add(3);
@@ -38,8 +41,11 @@ It is not an actor system — just a lightweight building block for Qt applicati
 ExecThread thread("calculator");                         // a dedicated event-loop thread
 Calculator *calc = thread.spawn<Calculator>().result();  // the actor is born on it
 
-//QFuture<Calculator*> future = thread.postFuture<Calculator>();
-//Calculator *calc = future.result();
+// or post the construction yourself, which suits creating several objects in one task:
+// QFuture<Calculator *> future = async::postFuture(&thread, [&thread] {
+//     return new Calculator(&thread);
+// });
+// Calculator *calc = future.result();
 
 calc->add(2);                                            // messages queue up, in order
 calc->add(3);
