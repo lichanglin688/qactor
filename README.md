@@ -58,9 +58,9 @@ Three things make it up:
 
 ## Requirements
 
-- CMake 3.19 or newer
+- CMake
 - A C++17 compiler
-- Qt 6.5 or newer (`Core`, `Test`, and `Network`; `Test` and `Network` can be omitted when their corresponding targets are disabled)
+- Qt 6 or newer (`Core`, `Test`, and `Network`; `Test` and `Network` can be omitted when their corresponding targets are disabled)
 
 ## Build and test
 
