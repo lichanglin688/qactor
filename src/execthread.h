@@ -27,11 +27,11 @@ public:
     QObject *context() const { return m_context; }
 
     // 创建 actor 的便捷方式：构造发生在本线程，对象之后不再迁移。
-    // 想一次创建多个对象时，自行 async::postFuture 到 context() 同样可以。
+    // 想一次创建多个对象时，自行 async::postWithResult 到 context() 同样可以。
     template <typename T, typename... Args>
     QFuture<T *> spawn(Args &&...args)
     {
-        return async::postFuture(m_context,
+        return async::postWithResult(m_context,
             [this, args = std::tuple<std::decay_t<Args>...>(
                               std::forward<Args>(args)...)]() mutable {
                 return std::apply(
@@ -56,11 +56,11 @@ void post(ExecThread *thread, Fn &&fn)
 }
 
 template <typename Fn>
-auto postFuture(ExecThread *thread, Fn &&fn)
+auto postWithResult(ExecThread *thread, Fn &&fn)
     -> QFuture<std::invoke_result_t<std::decay_t<Fn>>>
 {
     Q_ASSERT(thread != nullptr);
-    return postFuture(thread->context(), std::forward<Fn>(fn));
+    return postWithResult(thread->context(), std::forward<Fn>(fn));
 }
 
 }

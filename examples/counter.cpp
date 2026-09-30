@@ -45,7 +45,7 @@ private:
     template <typename Fn>
     QFuture<int> apply(Fn &&fn)
     {
-        return async::postFuture(execThread(), [this, fn = std::forward<Fn>(fn)] {
+        return async::postWithResult(execThread(), [this, fn = std::forward<Fn>(fn)] {
             fn();
             return m_value;
         });

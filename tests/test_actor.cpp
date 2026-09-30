@@ -14,7 +14,7 @@ public:
 
     QFuture<QThread *> ping()
     {
-        return async::postFuture(execThread(), [] { return QThread::currentThread(); });
+        return async::postWithResult(execThread(), [] { return QThread::currentThread(); });
     }
 
     void onShutdown() override { m_shutdowns->fetch_add(1); }

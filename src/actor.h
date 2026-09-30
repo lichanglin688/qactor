@@ -8,7 +8,7 @@
 #include <QObject>
 
 // actor 必须诞生在自己的执行线程上：通常用 ExecThread::spawn<T>()，
-// 也可以自行 async::postFuture 到该线程构造（一次要建多个对象时更合适）。
+// 也可以自行 async::postWithResult 到该线程构造（一次要建多个对象时更合适）。
 // 于是构造、初始化与所有消息都在那里执行，状态不再跨线程。
 class QACTOR_EXPORT Actor : public QObject
 {

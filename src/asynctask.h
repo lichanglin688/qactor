@@ -30,7 +30,7 @@ void post(QObject *obj, Fn &&fn)
 {
     using R = std::invoke_result_t<std::decay_t<Fn>>;
     static_assert(!detail::is_qfuture<R>::value,
-                  "post discards the return value; use postFuture if fn "
+                  "post discards the return value; use postWithResult if fn "
                   "returns QFuture<T>");
     Q_ASSERT(obj != nullptr);
     const bool posted = QMetaObject::invokeMethod(obj,
@@ -47,7 +47,7 @@ void post(QObject *obj, Fn &&fn)
 // 排队执行 fn 并通过 QFuture 返回结果。fn 抛出的异常记在 future 上，
 // 由 waitForFinished() / result() 在调用点重抛，不会逃逸进事件循环。
 template <typename Fn>
-auto postFuture(QObject *obj, Fn &&fn)
+auto postWithResult(QObject *obj, Fn &&fn)
     -> QFuture<std::invoke_result_t<std::decay_t<Fn>>>
 {
     using R = std::invoke_result_t<std::decay_t<Fn>>;
@@ -75,7 +75,7 @@ auto postFuture(QObject *obj, Fn &&fn)
     return future;
 }
 
-// 同 postFuture，但基于 std::future。obj 不能属于当前线程：
+// 同 postWithResult，但基于 std::future。obj 不能属于当前线程：
 // get() 会阻塞住任务运行所依赖的那个事件循环，必然死锁。
 template <typename Fn>
 auto postStdFuture(QObject *obj, Fn &&fn)

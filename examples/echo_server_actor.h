@@ -21,7 +21,7 @@ public:
 
     QFuture<quint16> start()
     {
-        return async::postFuture(execThread(), [this] {
+        return async::postWithResult(execThread(), [this] {
             connect(&m_server, &QTcpServer::newConnection, &m_server,
                     [this] { acceptConnections(); });
             m_server.listen(QHostAddress::LocalHost, 0);

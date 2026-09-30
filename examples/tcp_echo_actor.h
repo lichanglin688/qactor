@@ -30,7 +30,7 @@ public:
     // 阻塞等待只发生在 actor 自己的线程上，主线程事件循环不受影响。
     QFuture<QByteArray> echo(QByteArray request)
     {
-        return async::postFuture(execThread(), [this, request = std::move(request)] {
+        return async::postWithResult(execThread(), [this, request = std::move(request)] {
             m_socket->write(request);
             QByteArray response;
             while (response.size() < request.size() && m_socket->waitForReadyRead(5000))
