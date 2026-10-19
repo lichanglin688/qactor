@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QPromise>
 #include <QThread>
+#include <QtGlobal>
 
 #include <chrono>
 #include <exception>
@@ -22,10 +23,18 @@ void tell(QObject *obj, Fn &&fn)
     using R = std::invoke_result_t<std::decay_t<Fn>>;
     const bool posted = QMetaObject::invokeMethod(obj,
         [fn = std::forward<Fn>(fn)]() mutable {
-            if constexpr (std::is_void_v<R>)
-                std::invoke(fn);
-            else
-                (void)std::invoke(fn);
+            // tell 没有 future 承载结果，异常就地捕获记录：
+            // 让它逃逸进事件循环等于让 Qt 终止进程
+            try {
+                if constexpr (std::is_void_v<R>)
+                    std::invoke(fn);
+                else
+                    (void)std::invoke(fn);
+            } catch (const std::exception &error) {
+                qWarning("async::tell: %s", error.what());
+            } catch (...) {
+                qWarning("async::tell: unknown exception");
+            }
         },
         Qt::QueuedConnection);
     Q_ASSERT(posted);

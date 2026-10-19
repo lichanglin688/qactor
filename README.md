@@ -115,7 +115,6 @@ Worth knowing before you use it:
 
 - The shared pool is **not** a task thread pool: actors are long-lived and pinned, several actors on one thread run one after another, and a slow one blocks its neighbours. For piles of independent small jobs use `QtConcurrent::run` / `async::run` instead of actors.
 - `ActorRef` does not manage lifetime; once the object is gone the handle dangles and `isNull()` will not save you, so do not use it after destruction or `Shutdown()`.
-- `spawn<T>(&thread, ...)` accepts a thread that has not been `start()`ed yet: messages queue up and run once the thread starts.
 
 ### Examples
 

@@ -47,6 +47,7 @@ private slots:
     void messagesRunOnActorThread();
     void tellAndAskKeepOrder();
     void exceptionReachesCaller();
+    void tellExceptionStaysLocal();
     void dedicatedActorHasOwnThread();
     void sharedPoolIsRoundRobin();
 };
@@ -80,6 +81,17 @@ void ActorTest::exceptionReachesCaller()
 
     QFuture<int> future = counter.ask<&Counter::boom>();
     QVERIFY_EXCEPTION_THROWN(future.result(), std::runtime_error);
+}
+
+// tell 没有 future 承载结果，异常就地记录：不逃逸进事件循环，actor 继续可用
+void ActorTest::tellExceptionStaysLocal()
+{
+    auto counter = actor::spawnOnSharedPool<Counter>(7);
+
+    counter.tell<&Counter::boom>();
+
+    QCOMPARE(counter.ask<&Counter::value>().result(), 7);
+    QCOMPARE(counter.ask<&Counter::add>(1).result(), 8);
 }
 
 // ActorThreaded 给对象一条独占线程，且不交给 Shutdown() 托管
