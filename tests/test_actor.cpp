@@ -1,54 +1,105 @@
 #include <QtTest>
 
 #include "actor.h"
+#include "threadpool.h"
 
-#include <atomic>
+#include <QThread>
+#include <QVector>
 
-class ProbeActor final : public Actor
+#include <stdexcept>
+
+namespace {
+
+// 每个方法都在 actor 自己的线程上被调用，所以这里的字段不需要加锁。
+class Counter final : public QObject
 {
 public:
-    ProbeActor(ExecThread *thread, std::atomic<int> *shutdowns)
-        : Actor(thread), m_shutdowns(shutdowns)
+    explicit Counter(int start = 0)
+        : m_value(start)
     {
     }
 
-    QFuture<QThread *> ping()
-    {
-        return async::postWithResult(execThread(), [] { return QThread::currentThread(); });
-    }
+    int add(int operand) { m_value += operand; return m_value; }
+    int value() const { return m_value; }
 
-    void onShutdown() override { m_shutdowns->fetch_add(1); }
+    void record(int item) { m_trace.append(item); }
+    QVector<int> trace() const { return m_trace; }
+
+    QThread *currentThread() const { return QThread::currentThread(); }
+
+    int boom() const { throw std::runtime_error("boom"); }
 
 private:
-    std::atomic<int> *m_shutdowns = nullptr;
+    int m_value = 0;
+    QVector<int> m_trace;
 };
+
+} // namespace
 
 class ActorTest : public QObject
 {
     Q_OBJECT
 
 private slots:
-    void pendingShutdownSurvivesThreadStop();
+    void init() { actor::Init(2); }
+    void cleanup() { actor::Shutdown(); }
+
+    void messagesRunOnActorThread();
+    void tellAndAskKeepOrder();
+    void exceptionReachesCaller();
+    void dedicatedActorHasOwnThread();
+    void sharedPoolIsRoundRobin();
 };
 
-// 全程不等待：stop() 必须先把邮箱排空，shutdown 与析构才会各发生一次。
-void ActorTest::pendingShutdownSurvivesThreadStop()
+// ask 投递的方法在 actor 所在线程执行，而不是调用线程
+void ActorTest::messagesRunOnActorThread()
 {
-    ExecThread thread("actorTest");
-    std::atomic<int> shutdowns{0};
-    ProbeActor *actor = thread.spawn<ProbeActor>(&shutdowns).result();
+    auto counter = actor::spawnOnSharedPool<Counter>(10);
 
-    QFuture<QThread *> future = actor->ping();
-    future.waitForFinished();
-    QCOMPARE(future.result(), static_cast<QThread *>(&thread));
+    QCOMPARE(counter.ask<&Counter::currentThread>().result(), counter.thread());
+    QCOMPARE(counter.ask<&Counter::value>().result(), 10);
+    QVERIFY(counter.thread() != QThread::currentThread());
+}
 
-    actor->shutdown();
-    actor->shutdown();
-    actor->deleteLater();
-    thread.stop();
+// tell 与 ask 进同一条队列，混用时投递顺序仍然成立
+void ActorTest::tellAndAskKeepOrder()
+{
+    auto counter = actor::spawnOnSharedPool<Counter>();
 
-    QCOMPARE(shutdowns.load(), 1);
-    QVERIFY(!thread.isRunning());
+    counter.tell<&Counter::record>(1);
+    counter.ask<&Counter::record>(2).waitForFinished();
+    counter.tell<&Counter::record>(3);
+
+    QCOMPARE(counter.ask<&Counter::trace>().result(), QVector<int>({1, 2, 3}));
+}
+
+// 方法抛出的异常经 future 回到调用方
+void ActorTest::exceptionReachesCaller()
+{
+    auto counter = actor::spawnOnSharedPool<Counter>();
+
+    QFuture<int> future = counter.ask<&Counter::boom>();
+    QVERIFY_EXCEPTION_THROWN(future.result(), std::runtime_error);
+}
+
+// ActorThreaded 给对象一条独占线程，且不交给 Shutdown() 托管
+void ActorTest::dedicatedActorHasOwnThread()
+{
+    actor::ActorThreaded<Counter> counter("counterThread");
+
+    QCOMPARE(counter.ask<&Counter::currentThread>().result(), counter.thread());
+    QCOMPARE(counter.ask<&Counter::add>(5).result(), 5);
+    QVERIFY(counter.thread() != QThread::currentThread());
+    QVERIFY(!counter.thread()->objectName().isEmpty());
+}
+
+// 共享池版是轮转分配的：池里有两条线程，前两个 actor 落在不同线程上
+void ActorTest::sharedPoolIsRoundRobin()
+{
+    auto first = actor::spawnOnSharedPool<Counter>();
+    auto second = actor::spawnOnSharedPool<Counter>();
+
+    QVERIFY(first.thread() != second.thread());
 }
 
 QTEST_GUILESS_MAIN(ActorTest)

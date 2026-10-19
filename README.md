@@ -4,95 +4,122 @@
 
 ## 中文
 
-qactor 是一个基于 Qt 6 的 C++17 类actor 风格执行库：把一段工作投递到某个QObject对象（或某条线程）所属的事件循环上执行并返回结果。
+qactor 是一个基于 Qt 6 的 C++17 actor 风格执行库：actor 就是普通 `QObject`，被放到某条线程上钉住，所有消息在那条线程上串行执行，所以内部不需要加锁。
 
-它不是 标准actor 系统 —— 只是一个给 Qt 应用用的轻量构件。
+actor 可以是任何一个 `QObject` —— 没有基类要继承，也没有虚函数要实现，方法只管改自己的状态：
 
 ```cpp
-ExecThread thread("calculator");                         // 一条专属的事件循环线程
-Calculator *calc = thread.spawn<Calculator>().result();  // actor 诞生在该线程上
+class Calculator final : public QObject
+{
+public:
+    explicit Calculator(int initial = 0) : m_value(initial) {}
+    int add(int operand) { m_value += operand; return m_value; }
+    int multiply(int operand) { m_value *= operand; return m_value; }
+    int value() const { return m_value; }
+private:
+    int m_value = 0;
+};
+```
 
-// 也可以自己投递构造，一次建多个对象时更合适：
-// QFuture<Calculator *> future = async::postWithResult(&thread, [&thread] {
-//     return new Calculator(&thread);
-// });
-// Calculator *calc = future.result();
+把它搬到某条线程上，`spawn<T>()` 直接给出 `ActorRef<T>`，此后都通过句柄发消息：
 
-calc->add(2);                                            // 消息进入ExecThread，依次执行
-QFuture<int> r = calc->add(3);
-calc->multiply(4).then(&app, [](QFuture<int> future) {   // 结果回到主线程消费
-    qInfo() << "(2 + 3) * 4 =" << future.result();       // → 20
-});
+```cpp
+QThread worker;                                                   // 你自己开的一条线程
+worker.start();
+
+ActorRef<Calculator> calc = actor::spawn<Calculator>(&worker, 0);  // 造 actor，搬上去
+
+calc.tell<&Calculator::add>(2);                                    // 发消息，不等结果
+int v = calc.ask<&Calculator::value>().result();                   // 取结果：QFuture<int>
+calc.ask<&Calculator::multiply>(5).then(&app, ...);                // 也可以异步消费
 ```
 
 消息是这样走的：
 
 ```mermaid
 flowchart LR
-    C["调用线程"] -->|"async::post / postWithResult"| L["事件循环<br/>ExecThread"]
-    L --> A["Actor 状态<br/>只在该线程访问"]
+    C["调用线程"] -->|"tell / ask（成员函数指针）"| L["事件循环<br/>actor 所在线程"]
+    L --> A["QObject 状态<br/>只在该线程访问"]
     A -->|"QFuture：结果或异常"| C
 ```
 
-它由三件事构成：
+核心只有一件事，其余都是它的支撑：
 
-- **`async` 投递** —— 工作的投递方式：`post(QObject*, Functor)` 即发即忘，`postWithResult()` 用 `QFuture` 把结果或异常带回调用方，`postStdFuture()` 是 `std::future` 版本，`postWithTimeout()` 提供有界等待。
-- **`ExecThread`** —— QThread的子类，也是 actor 的宿主；`stop()` 先执行完线程内的全部任务再关闭事件循环，因此 `shutdown()` 和 `deleteLater()` 不必手动等待。
-- **`Actor`** —— 要求对象诞生在自己执行线程上的基类（通常用 `ExecThread::spawn<T>()`，也可以自行 `async::postWithResult` 到该线程构造，一次建多个对象时更合适）；派生类只需实现 `onShutdown()`，说明清理做什么。
+- **`ActorRef<T>`** —— actor 的句柄，也是发消息的唯一入口。借用裸指针，可以为空（`isNull()`），只能移动、不能拷贝。`ask<&T::method>(args...)` 取结果，`tell<&T::method>(args...)` 不等结果；两者进同一条队列，混用时投递顺序仍然成立。返回什么由方法的返回类型决定：返回普通值 `R` 得到 `QFuture<R>`；方法本身返回 `QFuture<X>` 时自动展平一层，适合「要等外部回包才完成」的事务。它不管生命周期，对象销毁后句柄就是悬垂的。
+- **`async::tell` / `async::ask`** —— 底下的投递层：把一段可执行体丢到 `QObject` 所属线程的事件循环上跑。越过 `ActorRef` 直接用它投递也可以。
+- **actor 落在哪条线程上由你选** —— `spawn<T>(&thread, ...)` 把对象搬到那条线程并返回句柄，对象之后不再迁移；目标线程还没 `start()` 也行，消息会先排队。想连线程一起打包可以用辅助类 `ActorThreaded<T>`，它析构时负责对象 `deleteLater` 与线程 `quit()` + `wait()`。这些都不依赖线程池。
+
+**额外功能：共享线程池**（`threadpool.h`）—— 想把 N 个 actor 均摊到几条线程上以省线程数时才需要：`Init(n)` 起线程，`spawnOnSharedPool<T>()` 轮转搬上去并登记，`Shutdown()` 停线程并销毁登记过的 actor。不用它也能正常写 actor。注意它不是任务线程池，见下面第一条。
+
+几点容易踩的：
+
+- 共享池**不是**任务线程池：对象长期存活、钉死在某条线上，同一条线上多个 actor 互相串行，一个卡住会拖住另一个。要并行跑一堆独立小任务请用 `QtConcurrent::run` / `async::run`，不要走 actor。
+- `ActorRef` 不管生命周期，对象销毁后它就是悬垂的，`isNull()` 也救不了 —— 别在析构或 `Shutdown()` 之后继续用。
 
 ### 示例
 
-- [`examples/counter.cpp`](examples/counter.cpp)：`Calculator` 只暴露加、减、乘、除四个消息，每个返回更新后的值；结果用 `QFuture::then(&app, ...)` 在主线程消费。消息共用同一个邮箱，因此乘法能看到排在它前面的运算；除零在 actor 内抛出，异常经 future 回到调用方。
-- [`examples/tcp_echo.cpp`](examples/tcp_echo.cpp)：回环 echo 的服务端与客户端各是一个 actor，各占一条 `ExecThread`；socket 的创建、使用与销毁都在 actor 自己的线程上，主线程不持有任何网络对象。
-
-收尾顺序固定为 `shutdown()` → `deleteLater()` → `ExecThread::stop()`。前两步都不必等待，`stop()` 会排空邮箱。
+- [`examples/counter.cpp`](examples/counter.cpp)：`Calculator` 是个普通 `QObject`，加减乘除各自返回更新后的值。示例以 `ActorThreaded` 起独占线程版，`tell` 与 `ask` 混发验证顺序保证，除零异常经 future 回到调用方，结果用 `then()` 交回主线程消费；末尾顺带演示了共享池版 `spawnOnSharedPool`。
 
 ---
 
 ## English
 
-qactor is a small C++17 actor-style execution library built on Qt 6: it posts a piece of work onto the event loop that owns some `QObject` (or some thread), runs it there, and returns the result.
+qactor is a small C++17 actor-style execution library built on Qt 6. An actor is placed on a thread and pinned there, so every message runs serially on that thread and the actor needs no locking.
 
-It is not a standard actor system — just a lightweight building block for Qt applications.
+An actor can be any `QObject` — no base class to inherit, no virtual to implement; its methods simply mutate its own state:
 
 ```cpp
-ExecThread thread("calculator");                         // a dedicated event-loop thread
-Calculator *calc = thread.spawn<Calculator>().result();  // the actor is born on it
+class Calculator final : public QObject
+{
+public:
+    explicit Calculator(int initial = 0) : m_value(initial) {}
+    int add(int operand) { m_value += operand; return m_value; }
+    int multiply(int operand) { m_value *= operand; return m_value; }
+    int value() const { return m_value; }
+private:
+    int m_value = 0;
+};
+```
 
-// or post the construction yourself, which suits creating several objects in one task:
-// QFuture<Calculator *> future = async::postWithResult(&thread, [&thread] {
-//     return new Calculator(&thread);
-// });
-// Calculator *calc = future.result();
+Move it onto a thread and `spawn<T>()` hands back an `ActorRef<T>`; from then on everything goes through the handle:
 
-calc->add(2);                                            // messages enter ExecThread and run in order
-QFuture<int> r = calc->add(3);
-calc->multiply(4).then(&app, [](QFuture<int> future) {   // result handled on the main thread
-    qInfo() << "(2 + 3) * 4 =" << future.result();       // → 20
-});
+```cpp
+QThread worker;                                                   // a thread of your own
+worker.start();
+
+ActorRef<Calculator> calc = actor::spawn<Calculator>(&worker, 0);  // build the actor, move it there
+
+calc.tell<&Calculator::add>(2);                                    // send a message, no result
+int v = calc.ask<&Calculator::value>().result();                   // send and wait: QFuture<int>
+calc.ask<&Calculator::multiply>(5).then(&app, ...);                // or consume it asynchronously
 ```
 
 How a message travels:
 
 ```mermaid
 flowchart LR
-    C["Calling thread"] -->|"async::post / postWithResult"| L["Event loop<br/>ExecThread"]
-    L --> A["Actor state<br/>touched only on this thread"]
+    C["Calling thread"] -->|"tell / ask (member function pointer)"| L["Event loop<br/>the actor's thread"]
+    L --> A["QObject state<br/>touched only on that thread"]
     A -->|"QFuture: result or exception"| C
 ```
 
-Three things make it up:
+One core idea, with everything else supporting it:
 
-- **`async` dispatch** — the ways to hand work over: `post(QObject*, Functor)` is fire and forget, `postWithResult()` carries the result or the exception back through a `QFuture`, `postStdFuture()` is the `std::future` flavour, and `postWithTimeout()` offers bounded waiting.
-- **`ExecThread`** — a `QThread` subclass, and the host of its actors; `stop()` runs every queued task before closing the loop, so `shutdown()` and `deleteLater()` need no waiting.
-- **`Actor`** — a base class requiring its objects to be born on their own execution thread (`ExecThread::spawn<T>()` is the convenient way, but posting your own construction with `async::postWithResult` works too and suits creating several objects in one task); a derived actor only implements `onShutdown()` to say what cleanup means.
+- **`ActorRef<T>`** — the handle to an actor, and the only way to send one a message. It borrows a raw pointer, may be empty (`isNull()`), and is move-only. `ask<&T::method>(args...)` returns a result, `tell<&T::method>(args...)` does not; both enter the same queue, so ordering holds when they are mixed. What comes back depends on the method: a plain `R` yields `QFuture<R>`, while a method returning `QFuture<X>` is flattened — handy for transactions that complete on some external reply. It does not manage lifetime; once the object is gone the handle dangles.
+- **`async::tell` / `async::ask`** — the dispatch layer underneath: hand a callable to the event loop that owns some `QObject`. You can bypass `ActorRef` and post through them directly.
+- **Where an actor lives is your choice** — `spawn<T>(&thread, ...)` moves the object onto that thread and returns the handle; the object never migrates afterwards, and the thread need not be `start()`ed yet (messages queue up). If you want the thread bundled along with it, the `ActorThreaded<T>` helper does that and takes care of `deleteLater` on the object and `quit()` + `wait()` on the thread when it is destroyed. None of this depends on the thread pool.
+
+**Optional extra: the shared thread pool** (`threadpool.h`) — only needed when you want N actors spread over a few threads to save threads: `Init(n)` starts them, `spawnOnSharedPool<T>()` round-robins the object onto one and registers it, `Shutdown()` stops the threads and destroys the registered actors. Actors work fine without it, and it is not a task pool — see the first caveat below.
+
+Worth knowing before you use it:
+
+- The shared pool is **not** a task thread pool: actors are long-lived and pinned, several actors on one thread run one after another, and a slow one blocks its neighbours. For piles of independent small jobs use `QtConcurrent::run` / `async::run` instead of actors.
+- `ActorRef` does not manage lifetime; once the object is gone the handle dangles and `isNull()` will not save you, so do not use it after destruction or `Shutdown()`.
+- `spawn<T>(&thread, ...)` accepts a thread that has not been `start()`ed yet: messages queue up and run once the thread starts.
 
 ### Examples
 
-- [`examples/counter.cpp`](examples/counter.cpp): keeps one running value behind four messages — add, subtract, multiply and divide — each returning the updated value through a `QFuture`, consumed on the main thread with `QFuture::then(&app, ...)`. All messages share one mailbox, so the multiply observes the operations queued before it; dividing by zero throws inside the actor and the exception reaches the caller through the future.
-- [`examples/tcp_echo.cpp`](examples/tcp_echo.cpp): runs a loopback echo server and a client as two actors, each on its own `ExecThread`, with every socket created, used and destroyed on the actor's own thread, so nothing network-related touches the main thread.
-
-The teardown order is always `shutdown()` → `deleteLater()` → `ExecThread::stop()`; nothing needs waiting for, because `stop()` drains the mailbox.
+- [`examples/counter.cpp`](examples/counter.cpp): `Calculator` is a plain `QObject` whose add, subtract, multiply and divide return the updated value. The example runs the dedicated-thread form (`ActorThreaded`), mixes `tell` and `ask` to show ordering, lets a division by zero reach the caller through the future, and consumes a result on the main thread with `then()`; the pooled form (`spawnOnSharedPool`) appears at the end as a bonus.
 
 ---
 
@@ -100,7 +127,7 @@ The teardown order is always `shutdown()` → `deleteLater()` → `ExecThread::s
 
 - CMake
 - A C++17 compiler
-- Qt 6 or newer (`Core`, `Test`, and `Network`; `Test` and `Network` can be omitted when their corresponding targets are disabled)
+- Qt 6 or newer (`Core`; `Test` when `BUILD_TESTING` is enabled)
 
 ## Build and test
 
@@ -112,26 +139,7 @@ ctest --test-dir build --output-on-failure
 
 If Qt is not in a standard location, pass its installation prefix with `-DCMAKE_PREFIX_PATH=/path/to/Qt`.
 
-Tests and examples are enabled by default. Disable them with `-DBUILD_TESTING=OFF` and `-DQACTOR_BUILD_EXAMPLES=OFF`, respectively.
-
-## Install
-
-```sh
-cmake -S . -B build-install -DBUILD_TESTING=OFF -DQACTOR_BUILD_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX=/path/to/install
-cmake --build build-install
-cmake --install build-install
-```
-
-The install exports the CMake target `qactor::qactor` and a `qactorConfig.cmake` package. Consumers can use:
-
-```cmake
-find_package(qactor 0.1 CONFIG REQUIRED)
-target_link_libraries(my_app PRIVATE qactor::qactor)
-```
-
-Public headers are installed at the include root, for example `#include <actor.h>`.
-
-On Windows the prefix defaults to `<build-dir>/install`, because the platform default sits under Program Files and would need administrator rights. Pass `-DCMAKE_INSTALL_PREFIX=/path/to/install` to override it.
+The example is always built; the test target follows the standard `BUILD_TESTING` switch, so pass `-DBUILD_TESTING=OFF` to skip it.
 
 ## Contributing
 
