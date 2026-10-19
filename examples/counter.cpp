@@ -40,10 +40,26 @@ private:
     int m_value = 0;
 };
 
-int main(int argc, char *argv[])
+void testWorker()
 {
-    QCoreApplication app(argc, argv);
+    QThread worker;
+    worker.setObjectName("worker");
+    worker.start();
+    auto calc = actor::spawn<Calculator>(&worker, 100);
+    qInfo() << "worker calculator lives on" << calc.thread()->objectName();
+    qInfo() << "100 + 50 =" << calc.ask<&Calculator::add>(50).result();
+    worker.quit();
+    worker.wait();  
 
+    // 独占一条线程的版本：类型本身就说清它只跑在自己的那条线上
+    actor::ActorThreaded<Calculator> dedicated("calculator");
+    qInfo() << "dedicated calculator:" << dedicated.ask<&Calculator::add>(10).result()
+            << "on" << dedicated.thread()->objectName();
+}
+
+void testPool()
+{
+    // 起两条池线程；此后 spawnOnSharedPool 出来的 actor 都归运行时管
     // 起两条池线程；此后 spawnOnSharedPool 出来的 actor 都归运行时管
     actor::Init(2);
 
@@ -57,7 +73,7 @@ int main(int argc, char *argv[])
     qInfo() << "2 - 1 =" << shared.ask<&Calculator::value>().result();
 
     QFuture<int> product = shared.ask<&Calculator::multiply>(5);
-    product.then(&app, [&app](QFuture<int> future) {
+    product.then(qApp, [](QFuture<int> future) {
         try {
             qInfo() << "(2 - 1) * 5 =" << future.result();
         } catch (const std::exception &error) {
@@ -73,17 +89,19 @@ int main(int argc, char *argv[])
         qInfo() << "Rejected divide by zero:" << error.what();
     }
 
-    // 独占一条线程的版本：类型本身就说清它只跑在自己的那条线上
-    actor::ActorThreaded<Calculator> dedicated("calculator");
-    qInfo() << "dedicated calculator:" << dedicated.ask<&Calculator::add>(10).result()
-            << "on" << dedicated.thread()->objectName();
+    // 停掉池线程并销毁登记过的 actor；dedicated 由自己的析构回收
+    actor::Shutdown();
+}
+int main(int argc, char *argv[])
+{
+    QCoreApplication app(argc, argv);
+
+    testWorker();
+    testPool();
+
     QTimer::singleShot(0, &app, [&app]() {
         app.exit();
     });
-    const int exitCode = app.exec();
 
-    // 停掉池线程并销毁登记过的 actor；dedicated 由自己的析构回收
-    actor::Shutdown();
-
-    return exitCode;
+    return app.exec();
 }
