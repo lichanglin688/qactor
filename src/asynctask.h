@@ -20,6 +20,8 @@ namespace async {
 template <typename Fn>
 void tell(QObject *obj, Fn &&fn)
 {
+    Q_ASSERT_X(obj != nullptr, "async::tell", "目标对象为空");
+
     using R = std::invoke_result_t<std::decay_t<Fn>>;
     const bool posted = QMetaObject::invokeMethod(obj,
         [fn = std::forward<Fn>(fn)]() mutable {
@@ -44,11 +46,14 @@ template <typename Fn>
 auto ask(QObject *obj, Fn &&fn)
     -> QFuture<std::invoke_result_t<std::decay_t<Fn>>>
 {
+    Q_ASSERT_X(obj != nullptr, "async::ask", "目标对象为空");
+
     using R = std::invoke_result_t<std::decay_t<Fn>>;
     QPromise<R> promise;
     promise.start();
     QFuture<R> future = promise.future();
 
+    // promise 归闭包所有：任务跑完就地 finish
     const bool posted = QMetaObject::invokeMethod(
         obj,
         [p = std::move(promise), fn = std::forward<Fn>(fn)]() mutable {

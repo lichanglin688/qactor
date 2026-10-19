@@ -6,7 +6,7 @@
 
 qactor 是一个基于 Qt 6 的 C++17 actor 风格执行库：actor 就是普通 `QObject`，被放到某条线程上钉住，所有消息在那条线程上串行执行，所以内部不需要加锁。
 
-actor 可以是任何一个 `QObject` —— 没有基类要继承，也没有虚函数要实现，方法只管改自己的状态：
+actor 可以是任何一个 `QObject` ：
 
 ```cpp
 class Calculator final : public QObject
@@ -45,7 +45,7 @@ flowchart LR
 
 核心只有一件事，其余都是它的支撑：
 
-- **`ActorRef<T>`** —— actor 的句柄，也是发消息的唯一入口。借用裸指针，可以为空（`isNull()`），只能移动、不能拷贝。`ask<&T::method>(args...)` 取结果，`tell<&T::method>(args...)` 不等结果；两者进同一条队列，混用时投递顺序仍然成立。返回什么由方法的返回类型决定：返回普通值 `R` 得到 `QFuture<R>`；方法本身返回 `QFuture<X>` 时自动展平一层，适合「要等外部回包才完成」的事务。它不管生命周期，对象销毁后句柄就是悬垂的。
+- **`ActorRef<T>`** —— actor 的句柄，也是发消息的唯一入口。`ask<&T::method>(args...)` 取结果，`tell<&T::method>(args...)` 不等结果；两者进同一条队列，混用时投递顺序仍然成立。返回什么由方法的返回类型决定：返回普通值 `R` 得到 `QFuture<R>`；方法本身返回 `QFuture<X>` 时自动展平一层，适合「要等外部回包才完成」的事务。
 - **`async::tell` / `async::ask`** —— 底下的投递层：把一段可执行体丢到 `QObject` 所属线程的事件循环上跑。越过 `ActorRef` 直接用它投递也可以。
 - **actor 落在哪条线程上由你选** —— `spawn<T>(&thread, ...)` 把对象搬到那条线程并返回句柄，对象之后不再迁移；目标线程还没 `start()` 也行，消息会先排队。想连线程一起打包可以用辅助类 `ActorThreaded<T>`，它析构时负责对象 `deleteLater` 与线程 `quit()` + `wait()`。这些都不依赖线程池。
 
@@ -54,7 +54,6 @@ flowchart LR
 几点容易踩的：
 
 - 共享池**不是**任务线程池：对象长期存活、钉死在某条线上，同一条线上多个 actor 互相串行，一个卡住会拖住另一个。要并行跑一堆独立小任务请用 `QtConcurrent::run` / `async::run`，不要走 actor。
-- `ActorRef` 不管生命周期，对象销毁后它就是悬垂的，`isNull()` 也救不了 —— 别在析构或 `Shutdown()` 之后继续用。
 
 ### 示例
 
@@ -66,7 +65,7 @@ flowchart LR
 
 qactor is a small C++17 actor-style execution library built on Qt 6. An actor is placed on a thread and pinned there, so every message runs serially on that thread and the actor needs no locking.
 
-An actor can be any `QObject` — no base class to inherit, no virtual to implement; its methods simply mutate its own state:
+An actor can be any `QObject`:
 
 ```cpp
 class Calculator final : public QObject
@@ -105,7 +104,7 @@ flowchart LR
 
 One core idea, with everything else supporting it:
 
-- **`ActorRef<T>`** — the handle to an actor, and the only way to send one a message. It borrows a raw pointer, may be empty (`isNull()`), and is move-only. `ask<&T::method>(args...)` returns a result, `tell<&T::method>(args...)` does not; both enter the same queue, so ordering holds when they are mixed. What comes back depends on the method: a plain `R` yields `QFuture<R>`, while a method returning `QFuture<X>` is flattened — handy for transactions that complete on some external reply. It does not manage lifetime; once the object is gone the handle dangles.
+- **`ActorRef<T>`** — the handle to an actor, and the only way to send one a message. `ask<&T::method>(args...)` returns a result, `tell<&T::method>(args...)` does not; both enter the same queue, so ordering holds when they are mixed. What comes back depends on the method: a plain `R` yields `QFuture<R>`, while a method returning `QFuture<X>` is flattened — handy for transactions that complete on some external reply.
 - **`async::tell` / `async::ask`** — the dispatch layer underneath: hand a callable to the event loop that owns some `QObject`. You can bypass `ActorRef` and post through them directly.
 - **Where an actor lives is your choice** — `spawn<T>(&thread, ...)` moves the object onto that thread and returns the handle; the object never migrates afterwards, and the thread need not be `start()`ed yet (messages queue up). If you want the thread bundled along with it, the `ActorThreaded<T>` helper does that and takes care of `deleteLater` on the object and `quit()` + `wait()` on the thread when it is destroyed. None of this depends on the thread pool.
 
@@ -114,7 +113,6 @@ One core idea, with everything else supporting it:
 Worth knowing before you use it:
 
 - The shared pool is **not** a task thread pool: actors are long-lived and pinned, several actors on one thread run one after another, and a slow one blocks its neighbours. For piles of independent small jobs use `QtConcurrent::run` / `async::run` instead of actors.
-- `ActorRef` does not manage lifetime; once the object is gone the handle dangles and `isNull()` will not save you, so do not use it after destruction or `Shutdown()`.
 
 ### Examples
 
