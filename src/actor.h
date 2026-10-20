@@ -52,24 +52,6 @@ public:
 
     explicit ActorRef(T *object = nullptr) : m_object(object) {}
 
-    ActorRef(const ActorRef &) = delete;
-    ActorRef &operator=(const ActorRef &) = delete;
-
-    ActorRef(ActorRef &&other) noexcept
-        : m_object(other.m_object)
-    {
-        other.m_object = nullptr;
-    }
-
-    ActorRef &operator=(ActorRef &&other) noexcept
-    {
-        if (this != &other) {
-            m_object = other.m_object;
-            other.m_object = nullptr;
-        }
-        return *this;
-    }
-
     bool isNull() const { return m_object.isNull(); }
     T *get() const { return m_object.data(); }
 
@@ -199,10 +181,7 @@ public:
         m_thread.wait();
     }
 
-    ActorThreaded(const ActorThreaded &) = delete;
-    ActorThreaded &operator=(const ActorThreaded &) = delete;
-
-    ActorRef<T> ref() const { return ActorRef<T>(m_ref.get()); }
+    ActorRef<T> ref() const { return m_ref; }
     T *get() const { return m_ref.get(); }
     QThread *thread() { return &m_thread; }
 
